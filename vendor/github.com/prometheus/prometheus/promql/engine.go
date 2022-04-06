@@ -1369,7 +1369,7 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 			// should keep the metric name.  For all the other range
 			// vector functions, the only change needed is to drop the
 			// metric name in the output.
-			if e.Func.Name != "last_over_time" {
+			if e.Func.Name != "last_over_time" && e.Func.Name != "ok_smoothie" {
 				metric = dropMetricName(metric)
 			}
 			ss := Series{

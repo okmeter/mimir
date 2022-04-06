@@ -20,6 +20,7 @@ import (
 	"github.com/grafana/dskit/tenant"
 
 	apierror "github.com/grafana/mimir/pkg/api/error"
+	"github.com/grafana/mimir/pkg/okdb"
 	"github.com/grafana/mimir/pkg/util"
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"github.com/grafana/mimir/pkg/util/validation"
@@ -248,6 +249,7 @@ func (rth roundTripperHandler) Do(ctx context.Context, r Request) (Response, err
 	if err := user.InjectOrgIDIntoHTTPRequest(ctx, request); err != nil {
 		return nil, apierror.New(apierror.TypeBadData, err.Error())
 	}
+	okdb.InjectUseOkDBIntoHTTPRequest(ctx, request)
 
 	response, err := rth.next.RoundTrip(request)
 	if err != nil {

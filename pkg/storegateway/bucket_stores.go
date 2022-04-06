@@ -35,6 +35,7 @@ import (
 	"github.com/weaveworks/common/logging"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/grafana/mimir/pkg/okdb/okdbfrontpb"
 	"github.com/grafana/mimir/pkg/storage/bucket"
 	"github.com/grafana/mimir/pkg/storage/tsdb"
 	"github.com/grafana/mimir/pkg/storegateway/indexcache"
@@ -56,6 +57,7 @@ type BucketStores struct {
 	bucketStoreMetrics *BucketStoreMetrics
 	metaFetcherMetrics *MetadataFetcherMetrics
 	shardingStrategy   ShardingStrategy
+	withOkDB           BucketStoreOption
 	syncBackoffConfig  backoff.Config
 
 	// Index cache shared across all tenants.
@@ -89,7 +91,7 @@ type BucketStores struct {
 }
 
 // NewBucketStores makes a new BucketStores.
-func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStrategy, bucketClient objstore.Bucket, limits *validation.Overrides, logLevel logging.Level, logger log.Logger, reg prometheus.Registerer) (*BucketStores, error) {
+func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStrategy, bucketClient objstore.Bucket, limits *validation.Overrides, logLevel logging.Level, okDBFront okdbfrontpb.OkStorageFrontendClient, logger log.Logger, reg prometheus.Registerer) (*BucketStores, error) {
 	cachingBucket, err := tsdb.CreateCachingBucket(cfg.BucketStore.ChunksCache, cfg.BucketStore.MetadataCache, bucketClient, logger, reg)
 	if err != nil {
 		return nil, errors.Wrapf(err, "create caching bucket")
@@ -122,6 +124,9 @@ func NewBucketStores(cfg tsdb.BlocksStorageConfig, shardingStrategy ShardingStra
 			MaxBackoff: 10 * time.Second,
 			MaxRetries: 3,
 		},
+	}
+	if okDBFront != nil {
+		u.withOkDB = WithOkDB(okDBFront)
 	}
 
 	// Register metrics.
@@ -471,6 +476,8 @@ func (u *BucketStores) getOrCreateStore(userID string) (*BucketStore, error) {
 			userID,
 			u.bucket,
 			u.limits,
+			u.shardingStrategy,
+			u.limits,
 			u.logger,
 			fetcherReg,
 			filters,
@@ -498,6 +505,9 @@ func (u *BucketStores) getOrCreateStore(userID string) (*BucketStore, error) {
 	}
 	if u.logLevel.String() == "debug" {
 		bucketStoreOpts = append(bucketStoreOpts, WithDebugLogging())
+	}
+	if u.withOkDB != nil {
+		bucketStoreOpts = append(bucketStoreOpts, u.withOkDB)
 	}
 
 	bs, err := NewBucketStore(

@@ -6,7 +6,10 @@
 package tsdb
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"strings"
 
 	"github.com/go-kit/log"
@@ -38,11 +41,13 @@ func NewUsersScanner(bucketClient objstore.Bucket, isOwned func(userID string) (
 // and list of users marked for deletion.
 //
 // If sharding is enabled, returned lists contains only the users owned by this instance.
-func (s *UsersScanner) ScanUsers(ctx context.Context) (users, markedForDeletion []string, err error) {
-	err = s.bucketClient.Iter(ctx, "", func(entry string) error {
-		users = append(users, strings.TrimSuffix(entry, "/"))
-		return nil
-	})
+func (s *UsersScanner) ScanUsers(ctx context.Context, useIndex bool) (users, markedForDeletion []string, err error) {
+	if useIndex {
+		users, err = s.scanUsersIndexed(ctx)
+	} else {
+		users, err = s.scanUsers(ctx)
+	}
+
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,4 +79,32 @@ func (s *UsersScanner) ScanUsers(ctx context.Context) (users, markedForDeletion 
 	}
 
 	return users, markedForDeletion, nil
+}
+
+func (s *UsersScanner) scanUsers(ctx context.Context) (users []string, err error) {
+	err = s.bucketClient.Iter(ctx, "", func(entry string) error {
+		users = append(users, strings.TrimSuffix(entry, "/"))
+		return nil
+	})
+
+	return
+}
+
+func (s *UsersScanner) scanUsersIndexed(ctx context.Context) (users []string, err error) {
+	r, err := s.bucketClient.Get(ctx, "tenant.index.json")
+	if err != nil {
+		return
+	}
+
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, r)
+	if err != nil {
+		return
+	}
+
+	if err = json.Unmarshal(buf.Bytes(), &users); err != nil {
+		return
+	}
+
+	return
 }

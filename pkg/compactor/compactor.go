@@ -7,6 +7,7 @@ package compactor
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"hash/fnv"
@@ -707,7 +708,7 @@ func (c *MultitenantCompactor) discoverUsersWithRetries(ctx context.Context) ([]
 	for retries.Ongoing() {
 		var users []string
 
-		users, lastErr = c.discoverUsers(ctx)
+		users, lastErr = c.discoverUsers(ctx, true)
 		if lastErr == nil {
 			return users, nil
 		}
@@ -718,15 +719,41 @@ func (c *MultitenantCompactor) discoverUsersWithRetries(ctx context.Context) ([]
 	return nil, lastErr
 }
 
-func (c *MultitenantCompactor) discoverUsers(ctx context.Context) ([]string, error) {
-	var users []string
+func (c *MultitenantCompactor) discoverUsers(ctx context.Context, useIndex bool) ([]string, error) {
+	if useIndex {
+		if users, err := c.scanUsersIndexed(ctx); err == nil {
+			return users, nil
+		}
+	}
 
-	err := c.bucketClient.Iter(ctx, "", func(entry string) error {
+	return c.scanUsers(ctx)
+}
+
+func (c *MultitenantCompactor) scanUsers(ctx context.Context) (users []string, err error) {
+	err = c.bucketClient.Iter(ctx, "", func(entry string) error {
 		users = append(users, strings.TrimSuffix(entry, "/"))
 		return nil
 	})
 
-	return users, err
+	return
+}
+
+func (c *MultitenantCompactor) scanUsersIndexed(ctx context.Context) (users []string, err error) {
+	r, err := c.bucketClient.Get(ctx, "tenant.index.json")
+	if err != nil {
+		return
+	}
+
+	buf, err := ioutil.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read tenant.index.json: %w", err)
+	}
+
+	if err = json.Unmarshal(buf, &users); err != nil {
+		return
+	}
+
+	return
 }
 
 // shardingStrategy describes whether compactor "owns" given user or job.

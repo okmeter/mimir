@@ -6,11 +6,16 @@
 package log
 
 import (
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/gogo/protobuf/proto"
 	"github.com/weaveworks/common/logging"
 	"github.com/weaveworks/common/server"
 )
@@ -60,4 +65,118 @@ func CheckFatal(location string, err error) {
 		logger.Log("err", fmt.Sprintf("%+v", err))
 		os.Exit(1)
 	}
+}
+
+type KeyValue interface {
+	Key() string
+	Value() string
+}
+
+type fnStringer func() string
+
+func (fn fnStringer) String() string {
+	return fn()
+}
+
+func Debug(logger log.Logger, kvs ...KeyValue) func(msg string, kvs ...KeyValue) {
+	logger = level.Debug(logger)
+	return func(msg string, localKVs ...KeyValue) {
+		args := make([]interface{}, 0, 2+2*len(kvs)+2*len(localKVs))
+		args = append(args, "debug_msg", msg)
+		for _, kv := range kvs {
+			args = append(args, fnStringer(kv.Key), fnStringer(kv.Value))
+		}
+		for _, kv := range localKVs {
+			args = append(args, fnStringer(kv.Key), fnStringer(kv.Value))
+		}
+		_ = logger.Log(args...)
+	}
+}
+
+type protoMD5 struct {
+	key string
+	msg proto.Marshaler
+}
+
+func ProtoMD5(key string, msg proto.Marshaler) KeyValue {
+	return protoMD5{key, msg}
+}
+
+func (p protoMD5) Key() string {
+	return p.key
+}
+
+func (p protoMD5) Value() string {
+	b, _ := p.msg.Marshal()
+	h := md5.Sum(b)
+	return base64.URLEncoding.EncodeToString(h[:])
+}
+
+type jsoner struct {
+	key string
+	msg interface{}
+}
+
+func JSON(key string, msg interface{}) KeyValue {
+	return jsoner{key, msg}
+}
+
+func (p jsoner) Key() string {
+	return p.key
+}
+
+func (p jsoner) Value() string {
+	b, _ := json.Marshal(p.msg)
+	return string(b)
+}
+
+type integer struct {
+	key string
+	val int
+}
+
+func Int(key string, v int) KeyValue {
+	return integer{key, v}
+}
+
+func (i integer) Key() string {
+	return i.key
+}
+
+func (i integer) Value() string {
+	return strconv.Itoa(i.val)
+}
+
+type stringer struct {
+	key string
+	val fmt.Stringer
+}
+
+func Stringer(key string, val fmt.Stringer) KeyValue {
+	return stringer{key, val}
+}
+
+func (s stringer) Key() string {
+	return s.key
+}
+
+func (s stringer) Value() string {
+	return s.val.String()
+}
+
+type closure struct {
+	key string
+	val func() string
+}
+
+func Closure(key string, val func() string) KeyValue {
+	return closure{key, val}
+}
+
+func (s closure) Key() string {
+	return s.key
+}
+
+func (s closure) Value() string {
+	return s.val()
 }

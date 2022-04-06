@@ -23,6 +23,7 @@ import (
 	"github.com/grafana/dskit/tenant"
 
 	"github.com/grafana/mimir/pkg/cache"
+	"github.com/grafana/mimir/pkg/okdb"
 	"github.com/grafana/mimir/pkg/util"
 )
 
@@ -141,6 +142,7 @@ func NewTripperware(
 		return nil, err
 	}
 	return MergeTripperwares(
+		okdb.ExtractUseOkDBFromHTTPHeaderTW,
 		newActiveUsersTripperware(log, registerer),
 		queryRangeTripperware,
 	), err

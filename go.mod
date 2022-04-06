@@ -59,6 +59,7 @@ require (
 	github.com/grafana-tools/sdk v0.0.0-20211220201350-966b3088eec9
 	github.com/grafana/regexp v0.0.0-20220304095617-2e8d9baf4ac2
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db
+	github.com/sony/gobreaker v0.5.0
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 )
 
@@ -226,8 +227,8 @@ replace git.apache.org/thrift.git => github.com/apache/thrift v0.0.0-20180902110
 // Using a 3rd-party branch for custom dialer - see https://github.com/bradfitz/gomemcache/pull/86
 replace github.com/bradfitz/gomemcache => github.com/themihai/gomemcache v0.0.0-20180902122335-24332e2d58ab
 
-// Using a fork of Prometheus while we work on querysharding to avoid a dependency on the upstream.
-replace github.com/prometheus/prometheus => github.com/grafana/mimir-prometheus v0.0.0-20220425152715-64e6c171c245
+// Using a local copy of Prometheus to add excluding og ok_smoothie from name dropping
+replace github.com/prometheus/prometheus => ./prometheus
 
 // Pin hashicorp depencencies since the Prometheus fork, go mod tries to update them.
 replace github.com/hashicorp/go-immutable-radix => github.com/hashicorp/go-immutable-radix v1.2.0

@@ -165,7 +165,7 @@ func (c *BlocksCleaner) runCleanup(ctx context.Context) {
 }
 
 func (c *BlocksCleaner) cleanUsers(ctx context.Context) error {
-	users, deleted, err := c.usersScanner.ScanUsers(ctx)
+	users, deleted, err := c.usersScanner.ScanUsers(ctx, true)
 	if err != nil {
 		return errors.Wrap(err, "failed to discover users from bucket")
 	}

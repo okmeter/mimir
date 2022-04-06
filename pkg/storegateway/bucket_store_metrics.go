@@ -49,6 +49,8 @@ type BucketStoreMetrics struct {
 	postingsFetchDuration prometheus.Histogram
 
 	indexHeaderReaderMetrics *indexheader.ReaderPoolMetrics
+
+	okdbFallback prometheus.Counter
 }
 
 func NewBucketStoreMetrics(reg prometheus.Registerer) *BucketStoreMetrics {
@@ -175,6 +177,10 @@ func NewBucketStoreMetrics(reg prometheus.Registerer) *BucketStoreMetrics {
 	})
 
 	m.indexHeaderReaderMetrics = indexheader.NewReaderPoolMetrics(extprom.WrapRegistererWithPrefix("cortex_bucket_store_", reg))
+	m.okdbFallback = promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "cortex_bucket_store_okdb_fallback_total",
+		Help: "Total number of fallbacks from okdb requests",
+	})
 
 	return &m
 }

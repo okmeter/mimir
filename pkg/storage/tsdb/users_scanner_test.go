@@ -29,7 +29,7 @@ func TestUsersScanner_ScanUsers_ShouldReturnedOwnedUsersOnly(t *testing.T) {
 	}
 
 	s := NewUsersScanner(bucketClient, isOwned, log.NewNopLogger())
-	actual, deleted, err := s.ScanUsers(context.Background())
+	actual, deleted, err := s.ScanUsers(context.Background(), false)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"user-1"}, actual)
 	assert.Equal(t, []string{"user-3"}, deleted)
@@ -49,7 +49,7 @@ func TestUsersScanner_ScanUsers_ShouldReturnUsersForWhichOwnerCheckOrTenantDelet
 	}
 
 	s := NewUsersScanner(bucketClient, isOwned, log.NewNopLogger())
-	actual, deleted, err := s.ScanUsers(context.Background())
+	actual, deleted, err := s.ScanUsers(context.Background(), false)
 	require.NoError(t, err)
 	assert.Equal(t, expected, actual)
 	assert.Empty(t, deleted)

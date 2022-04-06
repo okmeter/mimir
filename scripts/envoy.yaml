@@ -1,0 +1,88 @@
+static_resources:
+  listeners:
+  - name: s3
+    address:
+      socket_address:
+        address: ${PROXY_BIND_ADDRESS}
+        port_value: ${PROXY_BIND_PORT}
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          codec_type: AUTO
+          route_config:
+            name: local_route
+            - name: local_service
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: /
+                route:
+                  timeout: ${PROXY_TIMEOUT}
+                  cluster: s3_backends
+                typed_per_filter_config:
+                  envoy.filters.http.bandwidth_limit:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.bandwidth_limit.v3.BandwidthLimit
+                    stat_prefix: bandwidth_limiter_custom_route
+                    enable_mode: REQUEST_AND_RESPONSE
+                    limit_kbps: ${PROXY_BANDWIDTH_LIMIT}
+                    fill_interval: 0.02s
+          http_filters:
+          - name: envoy.filters.http.bandwidth_limit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.bandwidth_limit.v3.BandwidthLimit
+              stat_prefix: bandwidth_limiter_default
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: s3
+    connect_timeout: 0.3s
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.aggregate
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.aggregate.v3.ClusterConfig
+        clusters:
+        - s3_local
+        - s3_ceph_nodes
+  - name: s3_local
+    max_requests_per_connection: 1000
+    connect_timeout: 0.3s
+    health_checks:
+      timeout: 0.5s
+      interval: 1s
+      interval_jitter: 0.5s
+      unhealthy_threshold: 1
+      healthy_threshold: 2
+      tcp_health_check: {}
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: s3_local
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: ${PROXY_BIND_ADDRESS}
+                port_value: ${RGW_PORT}
+  - name: s3_ceph_nodes
+    max_requests_per_connection: 1000
+    connect_timeout: 0.3s
+    health_checks:
+      timeout: 0.5s
+      interval: 1s
+      interval_jitter: 0.5s
+      unhealthy_threshold: 1
+      healthy_threshold: 2
+      tcp_health_check: {}
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: s3_ceph_nodes
+      endpoints:
+      - lb_endpoints:
+        ${CEPH_NODE_ENDPOINTS}

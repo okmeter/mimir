@@ -25,6 +25,8 @@ import (
 	"github.com/weaveworks/common/logging"
 	"github.com/weaveworks/common/tracing"
 
+	"github.com/grafana/mimir/pkg/okdb"
+	"github.com/grafana/mimir/pkg/okdb/okdbfrontpb"
 	"github.com/grafana/mimir/pkg/storage/bucket"
 	mimir_tsdb "github.com/grafana/mimir/pkg/storage/tsdb"
 	"github.com/grafana/mimir/pkg/storegateway/storegatewaypb"
@@ -50,7 +52,8 @@ var (
 
 // Config holds the store gateway config.
 type Config struct {
-	ShardingRing RingConfig `yaml:"sharding_ring" doc:"description=The hash ring configuration."`
+	ShardingRing RingConfig  `yaml:"sharding_ring" doc:"description=The hash ring configuration."`
+	OkDBConfig   okdb.Config `yaml:"ok_db_config" doc:"description=Configuration to connect with ok db."`
 }
 
 // RegisterFlags registers the Config flags.
@@ -82,6 +85,8 @@ type StoreGateway struct {
 	// Ring used for sharding blocks.
 	ringLifecycler *ring.BasicLifecycler
 	ring           *ring.Ring
+
+	okDBFront okdbfrontpb.OkStorageFrontendClient
 
 	// Subservices manager (ring, lifecycler)
 	subservices        *services.Manager
@@ -157,8 +162,13 @@ func newStoreGateway(gatewayCfg Config, storageCfg mimir_tsdb.BlocksStorageConfi
 	}
 
 	shardingStrategy = NewShuffleShardingStrategy(g.ring, lifecyclerCfg.ID, lifecyclerCfg.Addr, limits, logger)
-
-	g.stores, err = NewBucketStores(storageCfg, shardingStrategy, bucketClient, limits, logLevel, logger, extprom.WrapRegistererWith(prometheus.Labels{"component": "store-gateway"}, reg))
+	if gatewayCfg.OkDBConfig.Address != "" {
+		g.okDBFront, err = okdb.MakeClient(gatewayCfg.OkDBConfig, logger, reg)
+		if err != nil {
+			return nil, errors.Wrap(err, "make okdb front client")
+		}
+	}
+	g.stores, err = NewBucketStores(storageCfg, shardingStrategy, bucketClient, limits, logLevel, g.okDBFront, logger, extprom.WrapRegistererWith(prometheus.Labels{"component": "store-gateway"}, reg))
 	if err != nil {
 		return nil, errors.Wrap(err, "create bucket stores")
 	}

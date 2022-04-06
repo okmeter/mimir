@@ -185,7 +185,7 @@ func (d *BucketScanBlocksFinder) scanBucket(ctx context.Context) (returnErr erro
 	}(time.Now())
 
 	// Discover all users first. This helps cacheability of the object store call.
-	userIDs, _, err := d.usersScanner.ScanUsers(ctx)
+	userIDs, _, err := d.usersScanner.ScanUsers(ctx, true)
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ package tenantfederation
 
 import (
 	"flag"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 )
@@ -20,10 +21,16 @@ const (
 type Config struct {
 	// Enabled switches on support for multi tenant query federation
 	Enabled bool `yaml:"enabled"`
+	// AdminID tenant id which will be swap to all tenants
+	AdminID string `yaml:"admin_id"`
+	// RefreshInterval interval for reload tenant list
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
 }
 
 func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.BoolVar(&cfg.Enabled, "tenant-federation.enabled", false, "If enabled on all services, queries can be federated across multiple tenants. The tenant IDs involved need to be specified separated by a '|' character in the 'X-Scope-OrgID' header.")
+	f.StringVar(&cfg.AdminID, "tenant-federation.admin-id", "||", "If request has header X-Scope-OrgId with given string, queries will be federated across all tenants.")
+	f.DurationVar(&cfg.RefreshInterval, "tenant-federation.refresh-interval", 5*time.Minute, "How often tenant list should be reloaded.")
 }
 
 // filterValuesByMatchers applies matchers to inputed `idLabelName` and

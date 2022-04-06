@@ -28,6 +28,7 @@ import (
 	"github.com/grafana/mimir/pkg/querier/batch"
 	"github.com/grafana/mimir/pkg/querier/engine"
 	"github.com/grafana/mimir/pkg/querier/iterators"
+	"github.com/grafana/mimir/pkg/querier/promqlext"
 	"github.com/grafana/mimir/pkg/storage/chunk"
 	"github.com/grafana/mimir/pkg/storage/lazyquery"
 	"github.com/grafana/mimir/pkg/util"
@@ -36,6 +37,13 @@ import (
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 	"github.com/grafana/mimir/pkg/util/validation"
 )
+
+func init() {
+	promqlext.RegisterOKDefined()
+	promqlext.RegisterOKZeroIfNone()
+	promqlext.RegisterOKReplaceNaN()
+	promqlext.RegisterOKSmoothie()
+}
 
 // Config contains the configuration require to create a querier
 type Config struct {

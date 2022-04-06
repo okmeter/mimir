@@ -39,6 +39,7 @@ import (
 	"github.com/grafana/dskit/tenant"
 
 	"github.com/grafana/mimir/pkg/mimirpb"
+	"github.com/grafana/mimir/pkg/okdb"
 	"github.com/grafana/mimir/pkg/querier/stats"
 	"github.com/grafana/mimir/pkg/storage/bucket"
 	"github.com/grafana/mimir/pkg/storage/series"
@@ -678,7 +679,11 @@ func (q *blocksStoreQuerier) fetchSeriesFromStores(
 	leftChunksLimit int,
 ) ([]storage.SeriesSet, []ulid.ULID, storage.Warnings, int, error) {
 	var (
-		reqCtx        = grpc_metadata.AppendToOutgoingContext(ctx, mimir_tsdb.TenantIDExternalLabel, q.userID)
+		reqCtx = okdb.InjectUseOkDBIntoGRPCMeta(
+			grpc_metadata.AppendToOutgoingContext(ctx,
+				mimir_tsdb.TenantIDExternalLabel, q.userID,
+			),
+		)
 		g, gCtx       = errgroup.WithContext(reqCtx)
 		mtx           = sync.Mutex{}
 		seriesSets    = []storage.SeriesSet(nil)
@@ -822,7 +827,11 @@ func (q *blocksStoreQuerier) fetchLabelNamesFromStore(
 	matchers []storepb.LabelMatcher,
 ) ([][]string, storage.Warnings, []ulid.ULID, error) {
 	var (
-		reqCtx        = grpc_metadata.AppendToOutgoingContext(ctx, mimir_tsdb.TenantIDExternalLabel, q.userID)
+		reqCtx = okdb.InjectUseOkDBIntoGRPCMeta(
+			grpc_metadata.AppendToOutgoingContext(ctx,
+				mimir_tsdb.TenantIDExternalLabel, q.userID,
+			),
+		)
 		g, gCtx       = errgroup.WithContext(reqCtx)
 		mtx           = sync.Mutex{}
 		nameSets      = [][]string{}
@@ -900,7 +909,11 @@ func (q *blocksStoreQuerier) fetchLabelValuesFromStore(
 	matchers ...*labels.Matcher,
 ) ([][]string, storage.Warnings, []ulid.ULID, error) {
 	var (
-		reqCtx        = grpc_metadata.AppendToOutgoingContext(ctx, mimir_tsdb.TenantIDExternalLabel, q.userID)
+		reqCtx = okdb.InjectUseOkDBIntoGRPCMeta(
+			grpc_metadata.AppendToOutgoingContext(ctx,
+				mimir_tsdb.TenantIDExternalLabel, q.userID,
+			),
+		)
 		g, gCtx       = errgroup.WithContext(reqCtx)
 		mtx           = sync.Mutex{}
 		valueSets     = [][]string{}

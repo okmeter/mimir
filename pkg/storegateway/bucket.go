@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -56,10 +58,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/grafana/mimir/pkg/okdb"
+	"github.com/grafana/mimir/pkg/okdb/okdbfrontpb"
 	"github.com/grafana/mimir/pkg/storage/sharding"
 	mimir_tsdb "github.com/grafana/mimir/pkg/storage/tsdb"
 	"github.com/grafana/mimir/pkg/storegateway/indexcache"
 	mimir_indexheader "github.com/grafana/mimir/pkg/storegateway/indexheader"
+	util_log "github.com/grafana/mimir/pkg/util/log"
 	util_math "github.com/grafana/mimir/pkg/util/math"
 	"github.com/grafana/mimir/pkg/util/spanlogger"
 )
@@ -133,6 +138,9 @@ type BucketStore struct {
 
 	// Enables hints in the Series() response.
 	enableSeriesResponseHints bool
+
+	// Use OkStorage gRPC service instead of index files
+	okDBFront okdbfrontpb.OkStorageFrontendClient
 }
 
 type noopCache struct{}
@@ -207,6 +215,12 @@ func WithChunkPool(chunkPool pool.Bytes) BucketStoreOption {
 func WithDebugLogging() BucketStoreOption {
 	return func(s *BucketStore) {
 		s.debugLogging = true
+	}
+}
+
+func WithOkDB(client okdbfrontpb.OkStorageFrontendClient) BucketStoreOption {
+	return func(s *BucketStore) {
+		s.okDBFront = client
 	}
 }
 
@@ -729,6 +743,140 @@ func blockSeries(
 	return newBucketSeriesSet(res), indexr.stats.merge(chunkr.stats).merge(&seriesCacheStats), nil
 }
 
+// blockSeries returns series matching given matchers, that have some data in given time range.
+// If skipChunks is provided, then provided minTime and maxTime are ignored and search is performed over the entire
+// block to make the result cacheable.
+func blockSeriesFromOkDB(
+	ctx context.Context,
+	front okdbfrontpb.OkStorageFrontendClient,
+	block *bucketBlock,
+	req *storepb.SeriesRequest,
+	shard *sharding.ShardSelector, // Shard selector.
+	seriesHashCache *hashcache.BlockSeriesHashCache, // Block-specific series hash cache (used only if shard selector is specified).
+	chunkr *bucketChunkReader, // Chunk reader for block.
+	chunksLimiter ChunksLimiter, // Rate limiter for loading chunks.
+	seriesLimiter SeriesLimiter, // Rate limiter for loading series.
+	logger log.Logger,
+) (storepb.SeriesSet, *queryStats, error) {
+	span, ctx := tracing.StartSpan(ctx, "blockSeries()")
+	span.LogKV("block ID", block.meta.ULID.String())
+	defer span.Finish()
+	debug := util_log.Debug(
+		spanlogger.FromContext(ctx, logger),
+		util_log.Stringer("block", block.meta.ULID),
+		util_log.Int("minTime", int(req.MinTime)),
+		util_log.Int("maxTime", int(req.MaxTime)),
+	)
+
+	okreq := &okdbfrontpb.SeriesRequest{
+		MinTime:  req.MinTime,
+		MaxTime:  req.MaxTime,
+		Matchers: req.Matchers,
+		Tenant:   block.userID,
+		Block:    block.meta.ULID.String(),
+	}
+	debug("get series request", util_log.JSON("request", req))
+	series, err := front.GetSeries(ctx, okreq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get series from okdb: %w", err)
+	}
+	debug("get series response", util_log.ProtoMD5("response", series))
+
+	// Transform all series into the response types and mark their relevant chunks
+	// for preloading.
+	var (
+		res              []seriesEntry
+		lookupErr        error
+		seriesCacheStats queryStats
+	)
+
+	tracing.DoWithSpan(ctx, "blockSeries() lookup series", func(ctx context.Context, span opentracing.Span) {
+		for _, s := range series.Series {
+			id := storage.SeriesRef(s.Reference)
+			lset := labelpb.LabelsToPromLabels(s.LabelSet.Labels)
+			// Skip the series if it doesn't belong to the shard.
+			if shard != nil {
+				hash, ok := seriesHashCache.Fetch(id)
+				seriesCacheStats.seriesHashCacheRequests++
+
+				if !ok {
+					hash = lset.Hash()
+					seriesHashCache.Store(id, hash)
+				} else {
+					seriesCacheStats.seriesHashCacheHits++
+				}
+
+				if hash%shard.ShardCount != shard.ShardIndex {
+					continue
+				}
+			}
+
+			// Check series limit after filtering out series not belonging to the requested shard (if any).
+			if err := seriesLimiter.Reserve(1); err != nil {
+				lookupErr = errors.Wrap(err, "exceeded series limit")
+				return
+			}
+
+			se := seriesEntry{lset: labelpb.LabelsToPromLabels(s.LabelSet.Labels)}
+			// Schedule loading chunks.
+			se.refs = make([]chunks.ChunkRef, 0, len(s.Meta))
+			se.chks = make([]storepb.AggrChunk, 0, len(s.Meta))
+
+			if !req.SkipChunks {
+				for j, c := range s.Meta {
+					// seriesEntry s is appended to res, but not at every outer loop iteration,
+					// therefore len(res) is the index we need here, not outer loop iteration number.
+					if err := chunkr.addLoad(chunks.ChunkRef(c.Ref), len(res), j); err != nil {
+						lookupErr = errors.Wrap(err, "add chunk load")
+						return
+					}
+					se.chks = append(se.chks, storepb.AggrChunk{
+						MinTime: c.MinTime,
+						MaxTime: c.MaxTime,
+					})
+					se.refs = append(se.refs, chunks.ChunkRef(c.Ref))
+				}
+
+				// Ensure sample limit through chunksLimiter if we return chunks.
+				if err := chunksLimiter.Reserve(uint64(len(se.chks))); err != nil {
+					lookupErr = errors.Wrap(err, "exceeded chunks limit")
+					return
+				}
+			}
+
+			res = append(res, se)
+		}
+	})
+
+	if lookupErr != nil {
+		return nil, &seriesCacheStats, lookupErr
+	}
+
+	if req.SkipChunks {
+		return newBucketSeriesSet(res), &seriesCacheStats, nil
+	}
+
+	if err := chunkr.load(res, req.Aggregates); err != nil {
+		return nil, chunkr.stats.merge(&seriesCacheStats), errors.Wrap(err, "load chunks")
+	}
+	debug("series set", util_log.Closure("res", func() string {
+		h := md5.New()
+		for _, s := range res {
+			h.Write(s.lset.Bytes(nil))
+			for _, c := range s.chks {
+				b, _ := c.Marshal()
+				h.Write(b)
+			}
+			for _, r := range s.refs {
+				binary.Write(h, binary.LittleEndian, r)
+			}
+		}
+		return base64.URLEncoding.EncodeToString(h.Sum(nil))
+	}))
+
+	return newBucketSeriesSet(res), chunkr.stats.merge(&seriesCacheStats), nil
+}
+
 type seriesCacheEntry struct {
 	LabelSets   []labels.Labels
 	MatchersKey indexcache.LabelMatchersKey
@@ -969,6 +1117,14 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 
 	s.mtx.RLock()
 
+	useOkDB := s.okDBFront != nil && okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Never
+	useFallback := func() func(err error) bool {
+		fallbackOnError := okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Always
+		return func(err error) bool {
+			return !useOkDB || (fallbackOnError && err != nil)
+		}
+	}()
+
 	for _, bs := range s.blockSets {
 		blockMatchers, ok := bs.labelMatchers(matchers...)
 		if !ok {
@@ -989,16 +1145,17 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 				resHints.AddQueriedBlock(b.meta.ULID)
 			}
 
-			var chunkr *bucketChunkReader
+			var (
+				chunkr *bucketChunkReader
+				indexr *bucketIndexReader
+			)
 			// We must keep the readers open until all their data has been sent.
-			indexr := b.indexReader()
+			indexr = b.indexReader()
+			defer runutil.CloseWithLogOnErr(s.logger, indexr, "series block")
 			if !req.SkipChunks {
 				chunkr = b.chunkReader(gctx)
 				defer runutil.CloseWithLogOnErr(s.logger, chunkr, "series block")
 			}
-
-			// Defer all closes to the end of Series method.
-			defer runutil.CloseWithLogOnErr(s.logger, indexr, "series block")
 
 			// If query sharding is enabled we have to get the block-specific series hash cache
 			// which is used by blockSeries().
@@ -1008,20 +1165,42 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 			}
 
 			g.Go(func() error {
-				part, pstats, err := blockSeries(
-					gctx,
-					indexr,
-					chunkr,
-					blockMatchers,
-					shardSelector,
-					blockSeriesHashCache,
-					chunksLimiter,
-					seriesLimiter,
-					req.SkipChunks,
-					req.MinTime, req.MaxTime,
-					req.Aggregates,
-					s.logger,
+				var (
+					part   storepb.SeriesSet
+					pstats *queryStats
+					err    error
 				)
+				if useOkDB {
+					part, pstats, err = blockSeriesFromOkDB(
+						gctx,
+						s.okDBFront,
+						b,
+						req,
+						shardSelector,
+						blockSeriesHashCache,
+						chunkr,
+						chunksLimiter,
+						seriesLimiter,
+						s.logger,
+					)
+				}
+				if useFallback(err) {
+					s.metrics.okdbFallback.Add(1)
+					part, pstats, err = blockSeries(
+						gctx,
+						indexr,
+						chunkr,
+						blockMatchers,
+						shardSelector,
+						blockSeriesHashCache,
+						chunksLimiter,
+						seriesLimiter,
+						req.SkipChunks,
+						req.MinTime, req.MaxTime,
+						req.Aggregates,
+						s.logger,
+					)
+				}
 				if err != nil {
 					return errors.Wrapf(err, "fetch series for block %s", b.meta.ULID)
 				}
@@ -1086,11 +1265,13 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 	}
 	// Merge the sub-results from each selected block.
 	tracing.DoInSpan(ctx, "bucket_store_merge_all", func(ctx context.Context) {
+		debug := util_log.Debug(spanlogger.FromContext(ctx, s.logger))
 		begin := time.Now()
 
 		// NOTE: We "carefully" assume series and chunks are sorted within each SeriesSet. This should be guaranteed by
 		// blockSeries method. In worst case deduplication logic won't deduplicate correctly, which will be accounted later.
 		set := storepb.MergeSeriesSets(res...)
+		i := 0
 		for set.Next() {
 			var series storepb.Series
 
@@ -1106,7 +1287,10 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 				s.metrics.chunkSizeBytes.Observe(float64(chunksSize(series.Chunks)))
 			}
 			series.Labels = labelpb.ZLabelsFromPromLabels(lset)
-			if err = srv.Send(storepb.NewSeriesResponse(&series)); err != nil {
+			res := storepb.NewSeriesResponse(&series)
+			i++
+			debug("return response", util_log.Int("i", i), util_log.ProtoMD5("res", res))
+			if err = srv.Send(res); err != nil {
 				err = status.Error(codes.Unknown, errors.Wrap(err, "send series response").Error())
 				return
 			}
@@ -1176,6 +1360,14 @@ func (s *BucketStore) LabelNames(ctx context.Context, req *storepb.LabelNamesReq
 	var sets [][]string
 	seriesLimiter := s.seriesLimiterFactory(s.metrics.queriesDropped.WithLabelValues("series"))
 
+	useOkDB := s.okDBFront != nil && okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Never
+	useFallback := func() func(err error) bool {
+		fallbackOnError := okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Always
+		return func(err error) bool {
+			return !useOkDB || (fallbackOnError && err != nil)
+		}
+	}()
+
 	for _, b := range s.blocks {
 		b := b
 		if !b.overlapsClosedInterval(req.Start, req.End) {
@@ -1190,9 +1382,18 @@ func (s *BucketStore) LabelNames(ctx context.Context, req *storepb.LabelNamesReq
 		indexr := b.indexReader()
 
 		g.Go(func() error {
+			var (
+				result []string
+				err    error
+			)
 			defer runutil.CloseWithLogOnErr(s.logger, indexr, "label names")
-
-			result, err := blockLabelNames(gctx, indexr, reqSeriesMatchers, seriesLimiter, s.logger)
+			if useOkDB {
+				result, err = blockLabelNamesFromOkDB(gctx, s.okDBFront, b, req)
+			}
+			if useFallback(err) {
+				s.metrics.okdbFallback.Add(1)
+				result, err = blockLabelNames(gctx, indexr, reqSeriesMatchers, seriesLimiter, s.logger)
+			}
 			if err != nil {
 				return errors.Wrapf(err, "block %s", b.meta.ULID)
 			}
@@ -1270,6 +1471,25 @@ func blockLabelNames(ctx context.Context, indexr *bucketIndexReader, matchers []
 	return names, nil
 }
 
+func blockLabelNamesFromOkDB(
+	ctx context.Context,
+	front okdbfrontpb.OkStorageFrontendClient,
+	block *bucketBlock,
+	req *storepb.LabelNamesRequest,
+) ([]string, error) {
+	res, err := front.GetLabelNames(ctx, &okdbfrontpb.LabelNamesRequest{
+		Tenant:   block.userID,
+		Block:    block.meta.ULID.String(),
+		MinTime:  req.Start,
+		MaxTime:  req.End,
+		Matchers: req.Matchers,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get label names from OkDB: %w", err)
+	}
+	return res.Names, nil
+}
+
 type labelNamesCacheEntry struct {
 	Names       []string
 	MatchersKey indexcache.LabelMatchersKey
@@ -1336,6 +1556,15 @@ func (s *BucketStore) LabelValues(ctx context.Context, req *storepb.LabelValuesR
 
 	var mtx sync.Mutex
 	var sets [][]string
+
+	useOkDB := s.okDBFront != nil && okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Never
+	useFallback := func() func(err error) bool {
+		fallbackOnError := okdb.ExtractUseOkDBFromGRPCMeta(ctx) != okdb.Always
+		return func(err error) bool {
+			return !useOkDB || (fallbackOnError && err != nil)
+		}
+	}()
+
 	for _, b := range s.blocks {
 		b := b
 
@@ -1347,13 +1576,21 @@ func (s *BucketStore) LabelValues(ctx context.Context, req *storepb.LabelValuesR
 		}
 
 		resHints.AddQueriedBlock(b.meta.ULID)
-
 		indexr := b.indexReader()
 
 		g.Go(func() error {
+			var (
+				result []string
+				err    error
+			)
 			defer runutil.CloseWithLogOnErr(s.logger, indexr, "label values")
-
-			result, err := blockLabelValues(gctx, indexr, req.Label, reqSeriesMatchers, s.logger)
+			if useOkDB {
+				result, err = blockLabelValuesFromOkDB(gctx, s.okDBFront, b, req)
+			}
+			if useFallback(err) {
+				s.metrics.okdbFallback.Add(1)
+				result, err = blockLabelValues(gctx, indexr, req.Label, reqSeriesMatchers, s.logger)
+			}
 			if err != nil {
 				return errors.Wrapf(err, "block %s", b.meta.ULID)
 			}
@@ -1440,6 +1677,26 @@ func blockLabelValues(ctx context.Context, indexr *bucketIndexReader, labelName 
 
 	storeCachedLabelValues(ctx, indexr.block.indexCache, indexr.block.userID, indexr.block.meta.ULID, labelName, matchers, matched, logger)
 	return matched, nil
+}
+
+func blockLabelValuesFromOkDB(
+	ctx context.Context,
+	front okdbfrontpb.OkStorageFrontendClient,
+	block *bucketBlock,
+	req *storepb.LabelValuesRequest,
+) ([]string, error) {
+	res, err := front.GetLabelValues(ctx, &okdbfrontpb.LabelValuesRequest{
+		Tenant:    block.userID,
+		Block:     block.meta.ULID.String(),
+		LabelName: req.Label,
+		MinTime:   req.Start,
+		MaxTime:   req.End,
+		Matchers:  req.Matchers,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get label values from OkDB: %w", err)
+	}
+	return res.LabelValues, nil
 }
 
 type labelValuesCacheEntry struct {

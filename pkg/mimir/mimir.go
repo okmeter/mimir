@@ -34,6 +34,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/grafana/dskit/tenant"
+	localTenant "github.com/grafana/mimir/pkg/tenant"
 
 	"github.com/grafana/mimir/pkg/alertmanager"
 	"github.com/grafana/mimir/pkg/alertmanager/alertstore"
@@ -370,7 +371,27 @@ func New(cfg Config) (*Mimir, error) {
 
 	// Swap out the default resolver to support multiple tenant IDs separated by a '|'
 	if cfg.TenantFederation.Enabled {
-		tenant.WithDefaultResolver(tenant.NewMultiResolver())
+		// tenant.WithDefaultResolver(tenant.NewMultiResolver())
+		ctx := context.Background()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		bucketClient, err := bucket.NewClient(ctx, cfg.BlocksStorage.Bucket, "tenant_resolver", util_log.Logger, prometheus.DefaultRegisterer)
+		if err != nil {
+			return nil, err
+		}
+		userScanner := tsdb.NewUsersScanner(bucketClient, func(string) (bool, error) { return true, nil }, util_log.Logger)
+		fetchAllTenants := func(ctx context.Context) ([]string, error) {
+			users, _, err := userScanner.ScanUsers(ctx, true)
+			return users, err
+		}
+		resolver := localTenant.NewMultiStarResolver(
+			ctx,
+			cfg.TenantFederation.AdminID,
+			cfg.TenantFederation.RefreshInterval,
+			util_log.Logger,
+			fetchAllTenants,
+		)
+		tenant.WithDefaultResolver(resolver)
 
 		if cfg.Ruler.TenantFederation.Enabled {
 			util_log.WarnExperimentalUse("ruler.tenant-federation")

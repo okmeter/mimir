@@ -1,0 +1,58 @@
+syntax = "proto3";
+package okstorage_protocol;
+
+option objc_class_prefix = "HLW";
+option go_package = "okdbfrontpb";
+
+import "gogoproto/gogo.proto";
+import "thanos/storepb/types.proto";
+import "thanos/labelpb/types.proto";
+
+message SeriesRequest {
+  int64 min_time = 1;
+  int64 max_time = 2;
+  repeated thanos.LabelMatcher matchers = 3 [(gogoproto.nullable) = false];
+  string tenant = 4;
+  string block  = 5;
+}
+
+message ChunkMeta {
+  uint64 ref = 1;
+  int64  min_time = 2;
+  int64  max_time = 3;
+}
+
+message Series {
+  uint64 reference = 1;
+  thanos.LabelSet label_set = 2 [(gogoproto.nullable) = false];
+  repeated ChunkMeta meta = 3 [(gogoproto.nullable) = false];
+}
+
+message SeriesResponse {
+  repeated Series series = 1 [(gogoproto.nullable) = false];
+}
+
+message LabelNamesRequest {
+  string tenant = 1;
+  string block  = 2;
+  int64 min_time = 3;
+  int64 max_time = 4;
+  repeated thanos.LabelMatcher matchers = 5 [(gogoproto.nullable) = false];
+}
+
+message LabelNamesResponse {
+  repeated string names = 1;
+}
+
+message LabelValuesRequest {
+  string tenant = 1;
+  string block  = 2;
+  string label_name = 3;
+  int64 min_time = 4;
+  int64 max_time = 5;
+  repeated thanos.LabelMatcher matchers = 6 [(gogoproto.nullable) = false];
+}
+
+message LabelValuesResponse {
+  repeated string label_values = 1;
+}

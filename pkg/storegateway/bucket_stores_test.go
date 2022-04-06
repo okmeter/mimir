@@ -75,7 +75,7 @@ func TestBucketStores_InitialSync(t *testing.T) {
 	require.NoError(t, err)
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -154,7 +154,7 @@ func TestBucketStores_InitialSyncShouldRetryOnFailure(t *testing.T) {
 	bucket = &failFirstGetBucket{Bucket: bucket}
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -217,7 +217,7 @@ func TestBucketStores_SyncBlocks(t *testing.T) {
 	require.NoError(t, err)
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -305,7 +305,7 @@ func TestBucketStores_syncUsersBlocks(t *testing.T) {
 			bucketClient := &bucket.ClientMock{}
 			bucketClient.MockIter("", allUsers, nil)
 
-			stores, err := NewBucketStores(cfg, testData.shardingStrategy, bucketClient, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), nil)
+			stores, err := NewBucketStores(cfg, testData.shardingStrategy, bucketClient, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), nil)
 			require.NoError(t, err)
 			require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 			t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -352,7 +352,7 @@ func testBucketStoresSeriesShouldCorrectlyQuerySeriesSpanningMultipleChunks(t *t
 	require.NoError(t, err)
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -441,7 +441,7 @@ func TestBucketStore_Series_ShouldQueryBlockWithOutOfOrderChunks(t *testing.T) {
 	require.NoError(t, err)
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, newNoShardingStrategy(), bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })
@@ -619,7 +619,7 @@ func TestBucketStores_deleteLocalFilesForExcludedTenants(t *testing.T) {
 	sharding := userShardingStrategy{}
 
 	reg := prometheus.NewPedanticRegistry()
-	stores, err := NewBucketStores(cfg, &sharding, bucket, defaultLimitsOverrides(t), mockLoggingLevel(), log.NewNopLogger(), reg)
+	stores, err := NewBucketStores(cfg, &sharding, bucket, defaultLimitsOverrides(t), mockLoggingLevel(), nil, log.NewNopLogger(), reg)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
 	t.Cleanup(func() { require.NoError(t, services.StopAndAwaitTerminated(ctx, stores)) })

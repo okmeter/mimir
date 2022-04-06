@@ -32,6 +32,8 @@ type BucketIndexMetadataFetcher struct {
 	userID      string
 	bkt         objstore.Bucket
 	cfgProvider bucket.TenantConfigProvider
+	strategy    ShardingStrategy
+	cfgProvider bucket.TenantConfigProvider
 	logger      log.Logger
 	filters     []block.MetadataFilter
 	metrics     *block.FetcherMetrics
@@ -41,6 +43,8 @@ func NewBucketIndexMetadataFetcher(
 	userID string,
 	bkt objstore.Bucket,
 	cfgProvider bucket.TenantConfigProvider,
+	strategy ShardingStrategy,
+	cfgProvider bucket.TenantConfigProvider,
 	logger log.Logger,
 	reg prometheus.Registerer,
 	filters []block.MetadataFilter,
@@ -48,6 +52,8 @@ func NewBucketIndexMetadataFetcher(
 	return &BucketIndexMetadataFetcher{
 		userID:      userID,
 		bkt:         bkt,
+		cfgProvider: cfgProvider,
+		strategy:    strategy,
 		cfgProvider: cfgProvider,
 		logger:      logger,
 		filters:     filters,

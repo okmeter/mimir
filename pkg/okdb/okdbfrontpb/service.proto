@@ -1,0 +1,13 @@
+syntax = "proto3";
+package okstorage_protocol;
+
+option objc_class_prefix = "HLW";
+option go_package = "okdbfrontpb";
+
+import "messages.proto";
+
+service OkStorageFrontend {
+  rpc GetSeries (SeriesRequest) returns (SeriesResponse) {}
+  rpc GetLabelNames (LabelNamesRequest) returns (LabelNamesResponse) {}
+  rpc GetLabelValues (LabelValuesRequest) returns (LabelValuesResponse) {}
+}

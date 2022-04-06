@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-kit/log/level"
@@ -531,7 +532,15 @@ func (t *Mimir) initQueryFrontend() (serv services.Service, err error) {
 	roundTripper = t.QueryFrontendTripperware(roundTripper)
 
 	handler := transport.NewHandler(t.Cfg.Frontend.Handler, roundTripper, util_log.Logger, prometheus.DefaultRegisterer)
-	t.API.RegisterQueryFrontendHandler(handler, t.BuildInfoHandler)
+	handler2 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var headers []string
+		for key, values := range r.Header {
+			headers = append(headers, fmt.Sprintf("%s: [%s]", key, strings.Join(values, "|")))
+		}
+		util_log.Logger.Log("msg", "UseOkDB flag", "headers", strings.Join(headers, ", "))
+		handler.ServeHTTP(w, r)
+	})
+	t.API.RegisterQueryFrontendHandler(handler2, t.BuildInfoHandler)
 
 	if frontendV1 != nil {
 		t.API.RegisterQueryFrontend1(frontendV1)

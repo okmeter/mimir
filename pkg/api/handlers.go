@@ -31,6 +31,7 @@ import (
 	"github.com/weaveworks/common/instrument"
 	"github.com/weaveworks/common/middleware"
 
+	"github.com/grafana/mimir/pkg/okdb"
 	"github.com/grafana/mimir/pkg/querier"
 	"github.com/grafana/mimir/pkg/querier/stats"
 	"github.com/grafana/mimir/pkg/util"
@@ -240,6 +241,7 @@ func NewQuerierHandler(
 		InflightRequests: inflightRequests,
 	}
 	router.Use(instrumentMiddleware.Wrap)
+	router.Use(okdb.ExtractUseOkDBFromHTTPHeaderMW)
 
 	// Define the prefixes for all routes
 	prefix := path.Join(cfg.ServerPrefix, cfg.PrometheusHTTPPrefix)

@@ -62,7 +62,7 @@ func TestBucketIndexMetadataFetcher_Fetch(t *testing.T) {
 		newMinTimeMetaFilter(1 * time.Hour),
 	}
 
-	fetcher := NewBucketIndexMetadataFetcher(userID, bkt, nil, logger, reg, filters)
+	fetcher := NewBucketIndexMetadataFetcher(userID, bkt, newNoShardingStrategy(), nil, logger, reg, filters, nil)
 	metas, partials, err := fetcher.Fetch(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, map[ulid.ULID]*metadata.Meta{
@@ -172,7 +172,7 @@ func TestBucketIndexMetadataFetcher_Fetch_CorruptedBucketIndex(t *testing.T) {
 	// Upload a corrupted bucket index.
 	require.NoError(t, bkt.Upload(ctx, path.Join(userID, bucketindex.IndexCompressedFilename), strings.NewReader("invalid}!")))
 
-	fetcher := NewBucketIndexMetadataFetcher(userID, bkt, nil, logger, reg, nil)
+	fetcher := NewBucketIndexMetadataFetcher(userID, bkt, newNoShardingStrategy(), nil, logger, reg, nil, nil)
 	metas, partials, err := fetcher.Fetch(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, metas)
@@ -213,6 +213,129 @@ func TestBucketIndexMetadataFetcher_Fetch_CorruptedBucketIndex(t *testing.T) {
 		"blocks_meta_synced",
 		"blocks_meta_syncs_total",
 	))
+}
+
+func TestBucketIndexMetadataFetcher_Fetch_ShouldResetGaugeMetrics(t *testing.T) {
+	const userID = "user-1"
+
+	bkt, _ := mimir_testutil.PrepareFilesystemBucket(t)
+	reg := prometheus.NewPedanticRegistry()
+	ctx := context.Background()
+	now := time.Now()
+	logger := log.NewNopLogger()
+	strategy := &mockShardingStrategy{}
+	strategy.On("FilterUsers", mock.Anything, mock.Anything).Return([]string{userID})
+
+	// Corrupted bucket index.
+	require.NoError(t, bkt.Upload(ctx, path.Join(userID, bucketindex.IndexCompressedFilename), strings.NewReader("invalid}!")))
+
+	fetcher := NewBucketIndexMetadataFetcher(userID, bkt, strategy, nil, logger, reg, nil, nil)
+	metas, _, err := fetcher.Fetch(ctx)
+	require.NoError(t, err)
+	assert.Len(t, metas, 0)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, bytes.NewBufferString(`
+		# HELP blocks_meta_synced Number of block metadata synced
+		# TYPE blocks_meta_synced gauge
+		blocks_meta_synced{state="corrupted-bucket-index"} 1
+		blocks_meta_synced{state="corrupted-meta-json"} 0
+		blocks_meta_synced{state="duplicate"} 0
+		blocks_meta_synced{state="failed"} 0
+		blocks_meta_synced{state="label-excluded"} 0
+		blocks_meta_synced{state="loaded"} 0
+		blocks_meta_synced{state="marked-for-deletion"} 0
+		blocks_meta_synced{state="marked-for-no-compact"} 0
+		blocks_meta_synced{state="no-bucket-index"} 0
+		blocks_meta_synced{state="no-meta-json"} 0
+		blocks_meta_synced{state="time-excluded"} 0
+		blocks_meta_synced{state="min-time-excluded"} 0
+		blocks_meta_synced{state="too-fresh"} 0
+	`), "blocks_meta_synced"))
+
+	// No bucket index.
+	require.NoError(t, bucketindex.DeleteIndex(ctx, bkt, userID, nil))
+
+	metas, _, err = fetcher.Fetch(ctx)
+	require.NoError(t, err)
+	assert.Len(t, metas, 0)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, bytes.NewBufferString(`
+		# HELP blocks_meta_synced Number of block metadata synced
+		# TYPE blocks_meta_synced gauge
+		blocks_meta_synced{state="corrupted-bucket-index"} 0
+		blocks_meta_synced{state="corrupted-meta-json"} 0
+		blocks_meta_synced{state="duplicate"} 0
+		blocks_meta_synced{state="failed"} 0
+		blocks_meta_synced{state="label-excluded"} 0
+		blocks_meta_synced{state="loaded"} 0
+		blocks_meta_synced{state="marked-for-deletion"} 0
+		blocks_meta_synced{state="marked-for-no-compact"} 0
+		blocks_meta_synced{state="no-bucket-index"} 1
+		blocks_meta_synced{state="no-meta-json"} 0
+		blocks_meta_synced{state="time-excluded"} 0
+		blocks_meta_synced{state="min-time-excluded"} 0
+		blocks_meta_synced{state="too-fresh"} 0
+	`), "blocks_meta_synced"))
+
+	// Create a bucket index.
+	block1 := &bucketindex.Block{ID: ulid.MustNew(1, nil)}
+	block2 := &bucketindex.Block{ID: ulid.MustNew(2, nil)}
+	block3 := &bucketindex.Block{ID: ulid.MustNew(3, nil)}
+
+	require.NoError(t, bucketindex.WriteIndex(ctx, bkt, userID, nil, &bucketindex.Index{
+		Version:   bucketindex.IndexVersion1,
+		Blocks:    bucketindex.Blocks{block1, block2, block3},
+		UpdatedAt: now.Unix(),
+	}))
+
+	metas, _, err = fetcher.Fetch(ctx)
+	require.NoError(t, err)
+	assert.Len(t, metas, 3)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, bytes.NewBufferString(`
+		# HELP blocks_meta_synced Number of block metadata synced
+		# TYPE blocks_meta_synced gauge
+		blocks_meta_synced{state="corrupted-bucket-index"} 0
+		blocks_meta_synced{state="corrupted-meta-json"} 0
+		blocks_meta_synced{state="duplicate"} 0
+		blocks_meta_synced{state="failed"} 0
+		blocks_meta_synced{state="label-excluded"} 0
+		blocks_meta_synced{state="loaded"} 3
+		blocks_meta_synced{state="marked-for-deletion"} 0
+		blocks_meta_synced{state="marked-for-no-compact"} 0
+		blocks_meta_synced{state="no-bucket-index"} 0
+		blocks_meta_synced{state="no-meta-json"} 0
+		blocks_meta_synced{state="time-excluded"} 0
+		blocks_meta_synced{state="min-time-excluded"} 0
+		blocks_meta_synced{state="too-fresh"} 0
+	`), "blocks_meta_synced"))
+
+	// Remove the tenant from the shard.
+	strategy = &mockShardingStrategy{}
+	strategy.On("FilterUsers", mock.Anything, mock.Anything).Return([]string{})
+	fetcher.strategy = strategy
+
+	metas, _, err = fetcher.Fetch(ctx)
+	require.NoError(t, err)
+	assert.Len(t, metas, 0)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, bytes.NewBufferString(`
+		# HELP blocks_meta_synced Number of block metadata synced
+		# TYPE blocks_meta_synced gauge
+		blocks_meta_synced{state="corrupted-bucket-index"} 0
+		blocks_meta_synced{state="corrupted-meta-json"} 0
+		blocks_meta_synced{state="duplicate"} 0
+		blocks_meta_synced{state="failed"} 0
+		blocks_meta_synced{state="label-excluded"} 0
+		blocks_meta_synced{state="loaded"} 0
+		blocks_meta_synced{state="marked-for-deletion"} 0
+		blocks_meta_synced{state="marked-for-no-compact"} 0
+		blocks_meta_synced{state="no-bucket-index"} 0
+		blocks_meta_synced{state="no-meta-json"} 0
+		blocks_meta_synced{state="time-excluded"} 0
+		blocks_meta_synced{state="min-time-excluded"} 0
+		blocks_meta_synced{state="too-fresh"} 0
+	`), "blocks_meta_synced"))
 }
 
 // noShardingStrategy is a no-op strategy. When this strategy is used, no tenant/block is filtered out.
